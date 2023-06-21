@@ -1,0 +1,225 @@
+---
+title: "Project DS"
+author: "Maulana"
+date: "2022-11-26"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(vroom)
+library(here)
+library(dplyr)
+library(ggplot2)
+library(textcat)
+library(tm)
+library(tidytext)
+library(topicmodels)
+library(wordcloud)
+library(shiny)
+library(shinydashboard)
+library(SnowballC)
+
+getwd()
+setwd("E:/Kuliah/#Semester 5/Prak Data Science/Data RStudio")
+```
+
+
+```{r}
+raw <- vroom(here("bookgenres.csv"))
+synopsis <- as.character(raw$synopsis)
+
+#clean punctuation n numbers
+clsynopsis <- tolower(as.character(synopsis))
+clsynopsis <- gsub("[[:punct:]]", " ", clsynopsis)
+clsynopsis <- gsub("[[:digit:]]", " ", clsynopsis)
+
+#clean spaces
+clsynopsis <- gsub("\n", " ", clsynopsis)
+clsynopsis <- gsub("^\\s+", "", clsynopsis)
+clsynopsis <- gsub("\\s+$", "", clsynopsis)
+clsynopsis <- gsub("[ |\t]+", " ", clsynopsis)
+```
+
+```{r}
+title <- raw$title
+df <- cbind(title,clsynopsis)
+df <- as_tibble(df)
+glimpse(df)
+```
+
+```{r}
+synopsi <- df %>% 
+  group_by(title) %>% 
+  unnest_tokens(word, clsynopsis) %>% 
+  ungroup() %>% 
+  anti_join(stop_words)
+
+synopsi
+```
+
+```{r}
+tfidf <- synopsi %>% 
+  count(title, word, sort = TRUE) %>% 
+  bind_tf_idf(word, title, n)
+
+tfidf
+```
+
+```{r}
+dtm <- synopsi %>% 
+  count(title, word) %>% 
+  cast_dtm(title, word, n)
+
+dtm
+```
+
+```{r}
+lda <- LDA(dtm, k = 5)
+
+lda
+```
+
+```{r}
+gammadf <- lda %>% 
+  tidy(matrix = "gamma") %>% 
+  rename(title = document) %>% 
+  arrange(title, desc(gamma))
+
+gammadf
+```
+
+```{r}
+p <- gammadf %>% 
+  top_n(10) %>% 
+  ggplot(aes(x = rev(title), 
+             y = gamma,
+             fill = factor(topic))) + 
+  geom_col()
+
+p
+```
+
+```{r}
+vbeta <- lda %>% 
+  tidy(matrix = "beta") %>% 
+  rename(word = term) %>% 
+  arrange(topic, desc(beta))
+
+vbeta %>% group_by(topic) %>% top_n(10, beta)
+```
+
+```{r}
+tbout <- cbind(title,synopsis)
+tbout <- cbind(tbout,gammadf[2:3])
+
+bplo <- sort(unique(tbout$topic))
+bplo
+```
+
+
+```{r}
+vbeta %>% filter(topic == 5) %>% 
+  top_n(5, beta) %>% 
+  ggplot(aes(x = reorder(word, beta), 
+             y = beta)) + 
+  geom_col() + 
+  labs(
+       x = "",
+       y = expression(beta),
+  title = "Keywords Topic 5"
+) + theme_light()
+
+```
+
+```{r}
+wordcl <- synopsi %>% count(word, sort = TRUE)
+
+set.seed(1234)
+wordcloud(words = wordcl$word, freq = wordcl$n, min.freq = 1, max.words = 100, random.order = FALSE, colors = brewer.pal(8, "Dark2"))
+```
+
+```{r}
+ui <- dashboardPage(title = "Synopsis Sentiment Analysis",
+                    dashboardHeader(title = "Synopsis Sentiment Analysis"),
+                    dashboardSidebar(
+                      sidebarMenu(
+                        menuItem("All Data",tabName = "all"),
+                        menuItem("Topic",tabName = "topic"),
+                        menuItem("WordCloud",tabName = "wcl")
+                      )
+                    ),
+                    dashboardBody(
+                      tabItems(
+                        tabItem(tabName = "all",
+                          DT::dataTableOutput("table"),
+                              ),
+                        tabItem(
+                          tabName = "topic",
+                          box(
+                            selectInput(inputId = "num",
+                                        label = "Select Topic",
+                                        choices = bplo,
+                                        selected = bplo[0])
+                          ),
+                          box(
+                            sliderInput(
+                              inputId = "topn",
+                              label = "Number of Words",
+                              min = 5, max = 20,
+                              value = 10
+                            )
+                          ),
+                          plotOutput("tpc")
+                        ),
+                        tabItem(
+                          tabName = "wcl",
+                          box(
+                            sliderInput(
+                              inputId = "wornum",
+                              label = "Number of Words",
+                              min = 1, max = 150,
+                              value = 100
+                            )
+                          ),
+                          plotOutput("wcld"),
+                        )
+                      )))
+
+server <- function(input, output, session) {
+  
+  output$table <- DT::renderDataTable({
+    DT::datatable(tbout)
+  })
+  
+  output$tpc <- renderPlot({
+      vbeta %>% 
+          filter(topic == input$num) %>% 
+          top_n(input$topn, beta) %>% 
+          ggplot(aes(x = reorder(word, beta), 
+                     y = beta)) + 
+          geom_col() + 
+          labs(
+              x = "",
+              y = expression(beta),
+          title = sprintf("Keywords Topic %s", input$num)
+          ) + theme_light() 
+  })
+  
+  output$wcld <- renderPlot({
+    wordcloud(words = wordcl$word, 
+              freq = wordcl$n, 
+              min.freq = 1, max.words = input$wornum,
+              random.order = FALSE, 
+              colors = brewer.pal(8, "Dark2"))
+  })
+}
+
+shinyApp(ui, server)
+```
+
+
